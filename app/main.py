@@ -72,7 +72,7 @@ def run_ai_loop(anak_id, session_id):
     fps_smooth = 0
 
     # ======================================================
-    # INISIALISASI VARIABEL AGAR TIDAK ERROR (UNBOUND LOCAL ERROR)
+    # INISIALISASI VARIABEL AWAL
     # ======================================================
     is_focused = True
     head = {}
@@ -85,7 +85,7 @@ def run_ai_loop(anak_id, session_id):
     show_e = False  # Ekspresi
 
     # ======================================================
-    # FITUR: PEMANTAU SESI DI LATAR BELAKANG (THREAD)
+    # FITUR PEMANTAU SESI DI LATAR BELAKANG (THREAD)
     # ======================================================
     session_is_active = [True] # Menggunakan list agar mudah diubah dari thread lain
 
@@ -133,68 +133,45 @@ def run_ai_loop(anak_id, session_id):
                     db.log_off_task_event(local_session_id, completed_event)
 
             # ======================================================
-            # TAMPILAN UI KAMERA & TOGGLE SKELETON (DIFILTER)
+            # TAMPILAN UI KAMERA & TOGGLE SKELETON
             # ======================================================
             if not HEADLESS_MODE:
-                
-                # 1. TUBUH: Hapus titik wajah (index 0-10 pada MediaPipe Pose)
+                # 1. Gambar Titik Skeleton (Jika di-toggle ON)
                 if show_t and body.get('landmarks'):
-                    for idx, lm in enumerate(body['landmarks']):
-                        if idx >= 11:  # Mulai dari bahu (11) ke bawah
-                            cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 5, (255, 0, 255), -1) 
+                    for lm in body['landmarks']:
+                        cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 3, (255, 0, 255), -1) # Ungu untuk tubuh
                 
-                # 2. KEPALA: Hanya 5 titik utama (Hidung, Dahi, Dagu, Pipi Kiri & Kanan)
                 if show_k and head.get('landmarks'):
-                    titik_kepala = [1, 10, 152, 234, 454]
-                    for idx, lm in enumerate(head['landmarks']):
-                        if idx in titik_kepala:
-                            cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 4, (0, 0, 255), -1) 
+                    for lm in head['landmarks']:
+                        cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 2, (0, 0, 255), -1) # Merah untuk kepala
                 
-                # 3. EKSPRESI: Hanya titik bibir, mata, dan alis
                 if show_e and expr.get('landmarks'):
-                    titik_ekspresi = [
-                        61, 291, 13, 14,             # Mulut
-                        159, 145, 33, 133,           # Mata Kiri
-                        386, 374, 362, 263,          # Mata Kanan
-                        70, 63, 105, 66, 107,        # Alis Kiri
-                        336, 296, 334, 293, 300      # Alis Kanan
-                    ]
-                    for idx, lm in enumerate(expr['landmarks']):
-                        if idx in titik_ekspresi:
-                            cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 2, (0, 255, 255), -1) 
+                    for lm in expr['landmarks']:
+                        cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 1, (255, 255, 0), -1) # Cyan untuk ekspresi
 
-                # ======================================================
-                # Teks UI Status & Penyebab Gangguan
-                # ======================================================
+                # 2. Teks UI Status & Reason
                 if is_focused:
-                    # Jika Fokus (Hijau)
                     cv2.putText(frame, "STATUS: FOKUS", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 else:
-                    # Jika Tidak Fokus (Merah)
                     cv2.putText(frame, "STATUS: OFF-TASK", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                     
                     # Mencari tahu apa penyebab spesifiknya di frame ini
                     live_triggers = []
-                    if head.get('bad_direction'): 
-                        live_triggers.append(f"Arah ({head.get('direction', 'UNKNOWN')})")
-                    if head.get('movement_event'): 
-                        live_triggers.append("Banyak Gerak")
-                    if body.get('active_not_focus'): 
-                        live_triggers.append(f"Postur ({body.get('posture', 'UNKNOWN')})")
-                    if expr.get('not_focus'): 
-                        live_triggers.append(f"Ekspresi ({expr.get('label', 'UNKNOWN')})")
+                    if head.get('bad_direction'): live_triggers.append(f"Arah ({head.get('direction', 'UNKNOWN')})")
+                    if head.get('movement_event'): live_triggers.append("Banyak Gerak")
+                    if body.get('active_not_focus'): live_triggers.append(f"Postur ({body.get('posture', 'UNKNOWN')})")
+                    if expr.get('not_focus'): live_triggers.append(f"Ekspresi ({expr.get('label', 'UNKNOWN')})")
                     
-                    # Tampilkan penyebab di bawah tulisan STATUS
                     reason_text = " | ".join(live_triggers)
                     cv2.putText(frame, f"Sebab: {reason_text}", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-                # Tampilkan FPS dan Petunjuk Tombol Keyboard
+                # 3. Instruksi Toggle & FPS
                 cv2.putText(frame, f"FPS: {int(fps_smooth)}", (540, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 cv2.putText(frame, "Keyboard: [T]ubuh | [K]epala | [E]kspresi | [Q]uit", (20, CAMERA_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
                 cv2.imshow("Sistem Deteksi (TA)", frame)
                 
-                # Mendeteksi Tombol yang Ditekan User
+                # Deteksi Input Keyboard
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'): 
                     session_is_active[0] = False
@@ -215,17 +192,17 @@ def run_ai_loop(anak_id, session_id):
                 }
                 db.log_off_task_event(local_session_id, final_event)
 
-        # Kalkulasi Akhir Sesi
+        # Kalkulasi Akhir
         events = db.get_session_events(local_session_id)
         total_duration = time.time() - real_start_time
         total_off_task = sum(e["duration_sec"] for e in events)
         on_task_sec = max(0, total_duration - total_off_task)
         
         persentase = round((on_task_sec / total_duration) * 100, 2) if total_duration > 0 else 0
-        kategori = "fokus" if persentase >= 75 else "tidak"
+        kategori = "Fokus" if persentase >= 75 else "Tidak Fokus"
 
         # =============================================================
-        # MENGIRIM KATEGORI AKHIR KE DATABASE SQL JALUR API WEB TEMAN
+        # MENGIRIM KATEGORI AKHIR KE SQL (WEB TEMAN ANDA)
         # =============================================================
         save_focus_result(anak_id, session_id, kategori)
 
@@ -261,9 +238,12 @@ def main():
                 time.sleep(2)
                 continue
 
-            # FITUR DEBUG: Membantu analisis kecocokan data sesi API web teman
+            # ============================================================
+            # FITUR DEBUG: Cetak data dari web
+            # ============================================================
             print(f"\n[DEBUG API] Data sesi dari Web: {session_data}")
 
+            # Menggunakan .get() agar lebih aman
             session_id = session_data.get("id") or session_data.get("session_id")
             
             if not session_id:
@@ -276,14 +256,19 @@ def main():
                 continue
 
             anak_id = session_data.get("anak_id")
+
             print(f"[SESSION ACTIVE] Session ID: {session_id} | Anak ID: {anak_id}")
+
             last_session_id = session_id
 
             run_ai_loop(anak_id, session_id)
+
             time.sleep(3)
 
         except KeyboardInterrupt:
+            print("\n[INFO] Program dihentikan oleh pengguna (Ctrl+C).")
             break
+
         except Exception as e:
             print(f"\nError di loop utama: {e}")
             time.sleep(5)
