@@ -1,19 +1,14 @@
-import mediapipe as mp
-import cv2
-import time
 import os
+import cv2
+import mediapipe as mp
+import time
 
-# =============================
-# PATH MODEL
-# =============================
+# ======================
+# MODEL PATH & INIT
+# ======================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.abspath(
-    os.path.join(BASE_DIR, "..", "model", "pose_landmarker_lite.task")
-)
+MODEL_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "model", "pose_landmarker_lite.task"))
 
-# =============================
-# INIT MEDIAPIPE
-# =============================
 BaseOptions = mp.tasks.BaseOptions
 PoseLandmarker = mp.tasks.vision.PoseLandmarker
 PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
@@ -24,107 +19,81 @@ options = PoseLandmarkerOptions(
     running_mode=VisionRunningMode.VIDEO,
     num_poses=1
 )
-
 landmarker = PoseLandmarker.create_from_options(options)
 
 timestamp_ms = 0
 
-# =============================
-# CONFIG
-# =============================
-# Visibility diturunkan sedikit agar lebih toleran terhadap jarak jauh
-VIS_THR = 0.30 
+# ======================
+# THRESHOLDS & STATE (DIKALIBRASI UNTUK DUDUK MEJA)
+# ======================
+LEFT_SHOULDER = 11; RIGHT_SHOULDER = 12
+LEFT_HIP = 23; RIGHT_HIP = 24
+
+# Toleransi visibilitas diturunkan (0.4) agar lebih aman untuk pakaian longgar/hijab
+VISIBILITY_THRESHOLD = 0.4 
+
+# Batas pundak dinaikkan (0.25) karena saat menunduk/condong ke meja, pundak akan naik di frame
+SHOULDER_Y_MIN = 0.25 
+
 HOLD_TIME = 1.2
 
-# =============================
-# STATE
-# =============================
 candidate_label = None
 candidate_start_time = 0
 stable_label = "UNKNOWN"
-stand_event_fired = False
 
 def analyze_body(frame):
-    global timestamp_ms
-    global candidate_label, candidate_start_time, stable_label, stand_event_fired
-
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-
+    global timestamp_ms, candidate_label, candidate_start_time, stable_label
+    now = time.time()
+    
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+    
     result = landmarker.detect_for_video(mp_image, timestamp_ms)
     timestamp_ms += 33
-    now = time.time()
-
+    
     raw_label = "UNKNOWN"
-
+    
     if result.pose_landmarks:
         lm = result.pose_landmarks[0]
-
-        # Ambil poin utama
-        nose = lm[0]
-        shoulder = lm[11] # Bahu kiri sebagai sampel
-        hip = lm[23]      # Pinggul kiri sebagai sampel
-        knee = lm[25]     # Lutut kiri sebagai sampel
-
-        # Cek apakah poin tersebut "Valid" (terlihat dan di dalam frame)
-        def check(point):
-            return point.visibility > VIS_THR and 0.0 <= point.y <= 1.0
-
-        face_visible = check(nose)
-        shoulder_visible = check(shoulder)
-        hip_visible = check(hip)
-        knee_visible = check(knee)
-
-        # ==========================================
-        # LOGIKA DEFAULT (SIMPEL)
-        # ==========================================
-
-        # 1. Jika Paha & Lutut terlihat jelas (Utamakan Berdiri)
-        if hip_visible and knee_visible:
-            # Perbandingan vertikal sederhana: jika jarak pinggul ke lutut signifikan
-            if abs(knee.y - hip.y) > 0.15:
-                raw_label = "BERDIRI"
-            else:
-                raw_label = "DUDUK"
-
-        # 2. Jika hanya badan atas (Kasus jarak dekat/kepotong)
-        elif shoulder_visible:
-            if face_visible:
-                # Bahu ada + Wajah ada = DUDUK
-                raw_label = "DUDUK"
-            else:
-                # Bahu ada + Wajah TIDAK ada (kepotong ke atas) = BERDIRI
-                raw_label = "BERDIRI"
         
+        l_sh = lm[LEFT_SHOULDER]; r_sh = lm[RIGHT_SHOULDER]
+        l_hip = lm[LEFT_HIP]; r_hip = lm[RIGHT_HIP]
+        
+        # 1. Cek apakah kedua bahu terlihat di layar (sesuai threshold baru)
+        shoulders_visible = (l_sh.visibility > VISIBILITY_THRESHOLD and r_sh.visibility > VISIBILITY_THRESHOLD)
+        
+        # 2. Ambil posisi rata-rata bahu secara vertikal (0.0 = pucuk atas frame, 1.0 = dasar frame)
+        shoulder_y = (l_sh.y + r_sh.y) / 2
+        
+        # 3. Cek pinggul. Model AI kadang berhalusinasi menebak pinggul di balik meja.
+        # Kita hanya anggap dia berdiri JIKA pinggul terlihat TINGGI/NAIK di layar (y < 0.75).
+        hip_is_high = False
+        if (l_hip.visibility > VISIBILITY_THRESHOLD and l_hip.y < 0.75) or \
+           (r_hip.visibility > VISIBILITY_THRESHOLD and r_hip.y < 0.75):
+            hip_is_high = True
+            
+        # 4. LOGIKA KEPUTUSAN DUDUK DI MEJA
+        if shoulders_visible and shoulder_y > SHOULDER_Y_MIN and not hip_is_high:
+            raw_label = "DUDUK"
         else:
-            raw_label = "UNKNOWN"
+            raw_label = "TIDAK DUDUK"
+            
+    else:
+        # Jika badan anak keluar sama sekali dari frame kamera
+        raw_label = "TIDAK DUDUK"
 
-    # =============================
-    # STABILISASI (Agar tidak lompat-lompat)
-    # =============================
+    # Stabilisasi agar status tidak berkedip-kedip saat bergerak sedikit
     if raw_label != candidate_label:
         candidate_label = raw_label
         candidate_start_time = now
 
-    # Jika label bertahan selama HOLD_TIME, baru update stable_label
     if now - candidate_start_time >= HOLD_TIME:
         stable_label = candidate_label
 
-    # =============================
-    # EVENT
-    # =============================
-    active_not_focus = (stable_label == "BERDIRI")
-    stand_event = False
-
-    if stable_label == "BERDIRI":
-        if not stand_event_fired:
-            stand_event = True
-            stand_event_fired = True
-    else:
-        stand_event_fired = False
+    active_not_focus = (stable_label == "TIDAK DUDUK")
 
     return {
         "posture": stable_label,
         "active_not_focus": active_not_focus,
-        "stand_event": stand_event
+        "reason": "Postur Berubah" if active_not_focus else "OK",
+        "landmarks": result.pose_landmarks[0] if result.pose_landmarks else None
     }
