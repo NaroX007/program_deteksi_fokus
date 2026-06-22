@@ -27,6 +27,10 @@ HEADLESS_MODE = False        # Set ke True jika dijalankan tanpa monitor
 PROCESS_EVERY_N_FRAMES = 3   # Optimasi FPS
 CAMERA_WIDTH = 640           # Resolusi optimal Raspi 5
 CAMERA_HEIGHT = 480
+
+# --- PENGATURAN TOLERANSI GERAKAN ---
+# Sistem baru menganggap anak Off-Task jika gerakannya kacau lebih dari 3 detik.
+MIN_OFF_TASK_DURATION = 3.0  
 # ==========================================
 
 class ThreadedCamera:
@@ -52,7 +56,6 @@ class ThreadedCamera:
         self.stopped = True
         self.stream.release()
 
-
 def run_ai_loop(anak_id, session_id):
     print(f"\n[AI START] Kamera menyala. Memulai deteksi untuk Sesi: {session_id}")
     
@@ -66,112 +69,98 @@ def run_ai_loop(anak_id, session_id):
     time.sleep(1.0)
 
     frame_count = 0
-    
-    # Variabel FPS
     prev_time = time.time()
     fps_smooth = 0
 
-    # ======================================================
-    # INISIALISASI VARIABEL AWAL
-    # ======================================================
     is_focused = True
     head = {}
     body = {}
     expr = {}
 
-    # Variabel Toggle untuk Skeleton/Landmarks
-    show_t = False  # Tubuh
-    show_k = False  # Kepala
-    show_e = False  # Ekspresi
+    show_t = False  
+    show_k = False  
+    show_e = False  
 
-    # ======================================================
-    # FITUR PEMANTAU SESI DI LATAR BELAKANG (THREAD)
-    # ======================================================
-    session_is_active = [True] # Menggunakan list agar mudah diubah dari thread lain
+    session_is_active = [True] 
 
     def monitor_session():
         while session_is_active[0]:
-            time.sleep(2.0) # Cek ke server web secara diam-diam tiap 2 detik
+            time.sleep(2.0)
             if get_active_session(anak_id) is None:
                 print("\n[INFO] Sesi telah dihentikan dari Web!")
                 session_is_active[0] = False
                 break
 
-    # Jalankan pemantau secara paralel
     threading.Thread(target=monitor_session, daemon=True).start()
-    # ======================================================
 
     try:
-        # Loop utama sekarang bergantung pada variabel session_is_active
         while session_is_active[0]:
             ret, shared_frame = cam.read()
             if not ret: break
             
-            # Copy frame agar teks tidak double/menumpuk
             frame = shared_frame.copy()
+            frame = cv2.flip(frame, 1)
+
             h_frame, w_frame, _ = frame.shape
             frame_count += 1
 
-            # Hitung FPS
             now = time.time()
-            fps_smooth = (0.9 * fps_smooth) + (0.1 * (1 / (now - prev_time)))
+            if (now - prev_time) > 0:
+                fps_smooth = (0.9 * fps_smooth) + (0.1 * (1 / (now - prev_time)))
             prev_time = now
 
             if frame_count % PROCESS_EVERY_N_FRAMES == 0:
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Menjalankan deteksi AI
                 head = analyze_head(rgb_frame)
                 body = analyze_body(rgb_frame)
                 expr = analyze_expression(rgb_frame)
 
                 is_focused, completed_event = tracker.update(head, body, expr)
 
-                # FILTER: Hanya simpan gangguan yang lebih dari 1 detik
-                if completed_event and completed_event['duration_sec'] > 1.0:
-                    print(f"[LOG] Off-Task: {completed_event['duration_sec']}s | {completed_event['triggers']}")
+                # FILTER DURASI GERAKAN EKSTREM
+                if completed_event and completed_event['duration_sec'] > MIN_OFF_TASK_DURATION:
+                    print(f"[LOG] Off-Task Ekstrem: {completed_event['duration_sec']}s | {completed_event['triggers']}")
                     db.log_off_task_event(local_session_id, completed_event)
 
-            # ======================================================
-            # TAMPILAN UI KAMERA & TOGGLE SKELETON
-            # ======================================================
             if not HEADLESS_MODE:
-                # 1. Gambar Titik Skeleton (Jika di-toggle ON)
                 if show_t and body.get('landmarks'):
-                    for lm in body['landmarks']:
-                        cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 3, (255, 0, 255), -1) # Ungu untuk tubuh
+                    for idx, lm in enumerate(body['landmarks']):
+                        if idx >= 11: 
+                            cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 5, (255, 0, 255), -1) 
                 
                 if show_k and head.get('landmarks'):
-                    for lm in head['landmarks']:
-                        cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 2, (0, 0, 255), -1) # Merah untuk kepala
+                    titik_kepala = [1, 10, 152, 234, 454]
+                    for idx, lm in enumerate(head['landmarks']):
+                        if idx in titik_kepala:
+                            cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 4, (0, 0, 255), -1) 
                 
                 if show_e and expr.get('landmarks'):
-                    for lm in expr['landmarks']:
-                        cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 1, (255, 255, 0), -1) # Cyan untuk ekspresi
+                    titik_ekspresi = [61, 291, 13, 14, 159, 145, 33, 133, 386, 374, 362, 263, 70, 63, 105, 66, 107, 336, 296, 334, 293, 300]
+                    for idx, lm in enumerate(expr['landmarks']):
+                        if idx in titik_ekspresi:
+                            cv2.circle(frame, (int(lm.x * w_frame), int(lm.y * h_frame)), 2, (0, 255, 255), -1) 
 
-                # 2. Teks UI Status & Reason
+                # TAMPILAN UI TETAP ON-TASK / OFF-TASK
                 if is_focused:
-                    cv2.putText(frame, "STATUS: FOKUS", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                    cv2.putText(frame, "STATUS: ON-TASK", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 else:
                     cv2.putText(frame, "STATUS: OFF-TASK", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                     
-                    # Mencari tahu apa penyebab spesifiknya di frame ini
                     live_triggers = []
                     if head.get('bad_direction'): live_triggers.append(f"Arah ({head.get('direction', 'UNKNOWN')})")
-                    if head.get('movement_event'): live_triggers.append("Banyak Gerak")
+                    if head.get('movement_event'): live_triggers.append("Gerakan Ekstrem")
                     if body.get('active_not_focus'): live_triggers.append(f"Postur ({body.get('posture', 'UNKNOWN')})")
                     if expr.get('not_focus'): live_triggers.append(f"Ekspresi ({expr.get('label', 'UNKNOWN')})")
                     
                     reason_text = " | ".join(live_triggers)
                     cv2.putText(frame, f"Sebab: {reason_text}", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-                # 3. Instruksi Toggle & FPS
                 cv2.putText(frame, f"FPS: {int(fps_smooth)}", (540, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 cv2.putText(frame, "Keyboard: [T]ubuh | [K]epala | [E]kspresi | [Q]uit", (20, CAMERA_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
-                cv2.imshow("Sistem Deteksi (TA)", frame)
+                cv2.imshow("Sistem Deteksi", frame)
                 
-                # Deteksi Input Keyboard
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'): 
                     session_is_active[0] = False
@@ -181,10 +170,9 @@ def run_ai_loop(anak_id, session_id):
                 elif key == ord('e'): show_e = not show_e
 
     finally:
-        # Penanganan event terakhir jika sesi ditutup saat anak sedang off-task
         if not tracker.is_focused:
             durasi = time.time() - tracker.off_task_start_time
-            if durasi > 1.0:
+            if durasi > MIN_OFF_TASK_DURATION:
                 final_event = {
                     "start_time": time.strftime("%H:%M:%S", time.localtime(tracker.off_task_start_time)),
                     "duration_sec": round(durasi, 2),
@@ -192,41 +180,49 @@ def run_ai_loop(anak_id, session_id):
                 }
                 db.log_off_task_event(local_session_id, final_event)
 
-        # Kalkulasi Akhir
+        # KALKULASI AKHIR SESI
         events = db.get_session_events(local_session_id)
         total_duration = time.time() - real_start_time
         total_off_task = sum(e["duration_sec"] for e in events)
         on_task_sec = max(0, total_duration - total_off_task)
         
         persentase = round((on_task_sec / total_duration) * 100, 2) if total_duration > 0 else 0
-        kategori = "Fokus" if persentase >= 75 else "Tidak Fokus"
+        
+        # PEMISAHAN VARIABEL DATABASE DAN TAMPILAN (PILIHAN B)
+        kategori_db = "Fokus" if persentase >= 75 else "Tidak Fokus"
+        kategori_layar = "On-Task" if persentase >= 75 else "Off-Task"
 
-        # =============================================================
-        # MENGIRIM KATEGORI AKHIR KE SQL (WEB TEMAN ANDA)
-        # =============================================================
-        save_focus_result(anak_id, session_id, kategori)
+        try:
+            # Kirim data aman ke API Web teman Anda
+            save_focus_result(anak_id, session_id, kategori_db)
+        except Exception as e:
+            print(f"[API WARNING] Gagal menyimpan hasil akhir ke web: {e}")
 
-        db.end_session(local_session_id, total_duration, persentase, kategori)
+        # Simpan ke local database dengan data aman
+        db.end_session(local_session_id, total_duration, persentase, kategori_db)
         cam.stop()
         if not HEADLESS_MODE: cv2.destroyAllWindows()
 
-        # Payload Firebase
         payload = {
             "session_id": session_id,
             "anak_id": anak_id,
             "session_date": session_start_iso,
             "total_duration_sec": round(total_duration, 2),
             "persentase_fokus": persentase,
-            "kategori": kategori,
+            "kategori": kategori_db, # Kirim data aman ke Firebase
             "events": events
         }
-        send_session_data(payload)
-        print(f"[FINISH] Persentase: {persentase}% | Kategori: {kategori}\n")
-
+        
+        try:
+            send_session_data(payload)
+        except Exception as e:
+            print(f"[API WARNING] Gagal mengirim ke Firebase: {e}")
+            
+        # Cetak menggunakan bahasa akademis di Terminal
+        print(f"[FINISH] Persentase: {persentase}% | Kategori: {kategori_layar}\n")
 
 def main():
     print("=== SISTEM ANALISIS FOKUS AKTIF ===")
-
     last_session_id = None
 
     while True:
@@ -238,37 +234,24 @@ def main():
                 time.sleep(2)
                 continue
 
-            # ============================================================
-            # FITUR DEBUG: Cetak data dari web
-            # ============================================================
-            print(f"\n[DEBUG API] Data sesi dari Web: {session_data}")
-
-            # Menggunakan .get() agar lebih aman
             session_id = session_data.get("id") or session_data.get("session_id")
-            
             if not session_id:
                 time.sleep(2)
                 continue
 
-            # CEGAH SESSION SAMA DIJALANKAN ULANG
             if session_id == last_session_id:
                 time.sleep(2)
                 continue
 
             anak_id = session_data.get("anak_id")
-
-            print(f"[SESSION ACTIVE] Session ID: {session_id} | Anak ID: {anak_id}")
-
+            print(f"\n[SESSION ACTIVE] Session ID: {session_id} | Anak ID: {anak_id}")
             last_session_id = session_id
 
             run_ai_loop(anak_id, session_id)
-
             time.sleep(3)
 
         except KeyboardInterrupt:
-            print("\n[INFO] Program dihentikan oleh pengguna (Ctrl+C).")
             break
-
         except Exception as e:
             print(f"\nError di loop utama: {e}")
             time.sleep(5)
