@@ -1,129 +1,69 @@
 import sqlite3
 import time
+import json
 
 class Database:
     def __init__(self, path="output/fokus.db"):
         self.conn = sqlite3.connect(path)
         self.cursor = self.conn.cursor()
-
-        # optimasi untuk performa
         self.cursor.execute("PRAGMA journal_mode=WAL;")
-        self.cursor.execute("PRAGMA synchronous=NORMAL;")
-
         self.create_tables()
 
-    # =========================
-    # BUAT TABEL
-    # =========================
     def create_tables(self):
-
-        # session
+        # Tabel session diupdate dengan 3 kolom baru
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS session (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             start_time TEXT,
-            end_time TEXT
+            end_time TEXT,
+            total_duration_sec REAL,
+            persentase_fokus REAL,
+            kategori TEXT
         )
         """)
-
-        # event log
         self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS events (
+        CREATE TABLE IF NOT EXISTS off_task_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id INTEGER,
-            timestamp REAL,
-            type TEXT,
-            detail TEXT
+            start_time TEXT,
+            duration_sec REAL,
+            triggers TEXT
         )
         """)
-
-        # summary (UPDATED)
-        self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS summary (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER,
-
-            head_move_count INTEGER,
-            head_direction_count INTEGER,
-            posture_stand_count INTEGER,
-            expression_negative_count INTEGER,
-
-            on_task_time REAL,
-            off_task_time REAL,
-            on_task_ratio REAL,
-
-            final_status TEXT
-        )
-        """)
-
         self.conn.commit()
 
-    # =========================
-    # SESSION
-    # =========================
     def start_session(self):
         start_time = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.cursor.execute(
-            "INSERT INTO session (start_time) VALUES (?)",
-            (start_time,)
-        )
+        self.cursor.execute("INSERT INTO session (start_time) VALUES (?)", (start_time,))
         self.conn.commit()
         return self.cursor.lastrowid
 
-    def end_session(self, session_id):
+    # Fungsi end_session diupdate untuk menerima dan menyimpan hasil kalkulasi AI
+    def end_session(self, session_id, total_duration_sec=0, persentase_fokus=0, kategori="UNKNOWN"):
         end_time = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.cursor.execute(
-            "UPDATE session SET end_time=? WHERE id=?",
-            (end_time, session_id)
-        )
+        self.cursor.execute("""
+            UPDATE session 
+            SET end_time=?, total_duration_sec=?, persentase_fokus=?, kategori=? 
+            WHERE id=?
+        """, (end_time, total_duration_sec, persentase_fokus, kategori, session_id))
         self.conn.commit()
 
-    # =========================
-    # EVENT LOG
-    # =========================
-    def log_event(self, session_id, event_type, detail):
+    def log_off_task_event(self, session_id, event_data):
+        triggers_json = json.dumps(event_data["triggers"])
         self.cursor.execute("""
-        INSERT INTO events (session_id, timestamp, type, detail)
+        INSERT INTO off_task_events (session_id, start_time, duration_sec, triggers)
         VALUES (?, ?, ?, ?)
-        """, (session_id, time.time(), event_type, detail))
+        """, (session_id, event_data["start_time"], event_data["duration_sec"], triggers_json))
         self.conn.commit()
 
-    # =========================
-    # SIMPAN SUMMARY (UPDATED)
-    # =========================
-    def save_summary(self, session_id,
-                     head_move_count,
-                     head_direction_count,
-                     posture_stand_count,
-                     expression_negative_count,
-                     on_task_time,
-                     off_task_time,
-                     on_task_ratio,
-                     final_status):
-
-        self.cursor.execute("""
-        INSERT INTO summary (
-            session_id,
-            head_move_count,
-            head_direction_count,
-            posture_stand_count,
-            expression_negative_count,
-            on_task_time,
-            off_task_time,
-            on_task_ratio,
-            final_status
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            session_id,
-            head_move_count,
-            head_direction_count,
-            posture_stand_count,
-            expression_negative_count,
-            on_task_time,
-            off_task_time,
-            on_task_ratio,
-            final_status
-        ))
-
-        self.conn.commit()
+    def get_session_events(self, session_id):
+        self.cursor.execute("SELECT start_time, duration_sec, triggers FROM off_task_events WHERE session_id=?", (session_id,))
+        rows = self.cursor.fetchall()
+        events = []
+        for row in rows:
+            events.append({
+                "start_time": row[0],
+                "duration_sec": row[1],
+                "triggers": json.loads(row[2])
+            })
+        return events
