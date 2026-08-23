@@ -15,10 +15,8 @@ KEY_PATH = os.path.abspath(
 
 db = None
 
+# Inisialisasi API Firebase
 
-# =========================
-# INIT FIREBASE
-# =========================
 def init_firebase():
 
     global db
@@ -42,9 +40,8 @@ def init_firebase():
         print("Firebase init error:", e)
 
 
-# =========================
-# SEND SESSION DATA
-# =========================
+# Mengirimkan Data Hasil Sesi ke Firebase
+
 def send_session_data(session_data, max_retry=3):
 
     if db is None:

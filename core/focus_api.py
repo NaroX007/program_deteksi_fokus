@@ -1,7 +1,7 @@
 import requests
 import time
 
-BASE_URL = "http://10.44.9.40:5000"
+BASE_URL = "http://192.168.1.142:5000"
 
 
 # =========================
