@@ -14,7 +14,7 @@ class Database:
         # Tabel session dengan field yang sudah di-rename
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS session (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_session INTEGER PRIMARY KEY AUTOINCREMENT,
             session_start TEXT,
             session_end TEXT,
             total_duration_sec REAL,
@@ -26,7 +26,7 @@ class Database:
         # Tabel off_task_events dengan field yang sudah di-rename
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS off_task_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_off_task INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id INTEGER,
             off_task_start TEXT,
             duration_sec REAL,
